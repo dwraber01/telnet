@@ -402,7 +402,7 @@ class TelnetInterface
 
 	protected:
 		// Add a Line to the Local Queue.
-		void PushLine(const char *pcLine, unsigned int uiClient);
+		void PushLine(const char *pcLine, int len, unsigned int uiClient);
 
 		// Add a block to the local queue.
 		void PushBlock(TelnetBlock *pBlock);
@@ -512,12 +512,19 @@ void TelnetInterface::ReleaseBlock(TelnetBlock &block)
 
 
 // Add a Line to the Local Queue.
-void TelnetInterface::PushLine(const char *pcLine, unsigned int uiClient)
+void TelnetInterface::PushLine(const char *pcLine, int len, unsigned int uiClient)
 {
+	if (len <= 0 )
+	{
+		return;
+	}
+
 	m_LineMutex.Lock();
 	TelnetLineNode *node = new TelnetLineNode;
-	node->pcLine = (char*)::malloc(sizeof(char)*(strlen(pcLine)+1));
-	strcpy(node->pcLine, pcLine);
+	//node->pcLine = (char*)::malloc(sizeof(char)*(strlen(pcLine)+1));
+	node->pcLine = (char*)::malloc(sizeof(char)*(len +1));
+	memcpy(node->pcLine, pcLine, len);
+	node->pcLine[len] = '\0';
 	node->uiClient = uiClient;
 	m_Lines.push(node);
 	m_LineMutex.Unlock();
@@ -638,13 +645,36 @@ class TelnetParser
 			unsigned int uiNewSize = uiLen + m_uiBufferUsed;
 			if(uiNewSize >= m_uiBufferSize) Resize(uiNewSize);
 			
-			for(unsigned int i=0; i<uiLen; i++)
+			int index = 0;
+			if (pcBuffer[index] == -1)
+			{
+                //Extended ASCII Codes: 255,
+				while ((pcBuffer[index] == -1) && (index <= uiLen - 3))
+				{
+					index += 3;
+				}
+			}
+
+			if (index >= uiLen)
+			{
+                //Hard code, for command message transfered with the FreeSSHd telnet server.
+                //TODO: need to optimize the design of dealing about control message before login.
+				const char buff[15] = {0xff, 0xfb, 0x18, 0xff, 0xfd, 0x03, 0xff, 0xfb, 0x03, 0xff, 0xfd, 0x01, 0xff, 0xfb, 0x1f};
+				gTelnet->sendMessage(0, buff, 15);
+				return;
+			}
+
+			for(unsigned int i=index; i<uiLen; i++)
 			{
 				if(m_bBlockMode)
 					BlockChar(pcBuffer[i]);
 				else
 					ParseChar(pcBuffer[i]);
 			}
+			
+			ParseChar('\r');
+			ParseChar('\n');
+
 		}
 		
 		const char *GetLine(void)
@@ -702,7 +732,7 @@ class TelnetParser
 			}
 			else
 			{
-				// ???
+				// m_pBuffer[m_uiBufferUsed++] = c;
 			}
 			
 			m_pBuffer[m_uiBufferUsed] = 0;
@@ -825,6 +855,8 @@ class TelnetClient : public TelnetInterface
 		// returns false on failure.
 		virtual bool SendBlock(const TelnetBlock &block);
 
+		virtual bool SendRawCommand(const char *vcBuffer, unsigned int len);
+
 	private:
 		void ThreadFunc(void);
 		friend DWORD WINAPI _TelnetClientFunc(LPVOID arg);
@@ -836,6 +868,7 @@ class TelnetClient : public TelnetInterface
 		OdfMutex  m_Mutex;
 		SOCKET    m_Socket;
 		HANDLE    m_Thread;
+		bool      m_ControlCmdSent; //Flag for checking: has already send the command message before the login message.  
 };
 
 //*************************************************************************************
@@ -880,27 +913,79 @@ void TelnetClient::ThreadFunc(void)
 		}
 		else
 		{
-			parser.AddBuffer(vcBuffer, iBytesRead);
+			//parser.AddBuffer(vcBuffer, iBytesRead);
+
+			int index = 0;
+			if (vcBuffer[index] == -1)
+			{
+				if (!m_ControlCmdSent)
+				{
+					// Define the echo message before Login message.
+                    // There will be three message between client and server according telnet protocal.
+                    // In other word, client and server must transfer some command. 
+					const char buff[16] = {0xff, 0xfb, 0x18, 0xff, 0xfd, 0x03, 0xff, 0xfb, 0x03, 0xff, 0xfd, 0x01, 0xff, 0xfb, 0x1f, 0};
+					gTelnet->sendMessage(0, buff, 15);
+					m_ControlCmdSent = true; //Command message has been send to server. 
+				}
+			}
+
+            bool hasReadableChar= false;
+			int flag = 0;
+			int lineStart = 0;
+			while (index < iBytesRead)
+			{
+				unsigned char c = (unsigned char) vcBuffer[index];
+				switch(flag)
+				{
+				case 0:
+					if (c == 255)
+					{
+						// jump 3 (one commend is marked by 3 bytes.),
+                        // Command message is started by IAC(255), followed by one byte for action verb, last with the other message bye.
+                        // BYTE + BYTE + BYTE
+                        // We just want to collect the readable char, so we jump the command positions.
+						index += 3;
+						continue;
+					}
+					else if(c >= 32 && c < 128)
+					{
+                        hasReadableChar = true;
+						// If current char is readable, so mark the position.
+						lineStart = index; //mark the start position of readable message.
+						flag = 1; // Set the flag for find the end of this readable line.
+						index ++;
+						continue;
+					}
+					else
+					{
+						// we do not consider the other condition, just add the index, and find the next.
+						index++;
+						continue;
+					}
+					break;
+
+				case 1:
+					if (c == '\n')
+					{
+						// Save the readable message(signed char) in current line.
+						PushLine(vcBuffer + lineStart, (index - lineStart + 1), 0);
+						lineStart = index;
+						flag = 0; // Current line is end, start to deal with the new line.
+					}
+					index++;
+					break;
+				}
+			}
+			
+            // For the exception conditon: If this message has no '\n' to end.
+			if ((index > lineStart) && hasReadableChar)
+			{
+				// If there has some readable char in current message, push filtered message in buffer(,and display in clinet windows).
+				PushLine(vcBuffer + lineStart, (index - lineStart), 0);
+			}
+
 		}
-		
-		const char *pcLine = 0;
-		while((pcLine = parser.GetLine()))
-		{
-			PushLine(pcLine, 0);
-		}
-		
-		const void *pBlockData = 0;
-		unsigned int uiBlockSize = 0;
-		while((pBlockData = parser.GetBlock(uiBlockSize)))
-		{
-			TelnetBlock *pBlock   = new TelnetBlock;
-			pBlock->m_pData       = (void *)pBlockData;
-			pBlock->m_uiDataSize  = uiBlockSize;
-			pBlock->m_uiClient    = 0;
-			pBlock->m_pcName      = 0;
-			PushBlock(pBlock);
-		}
-		
+
 		m_Mutex.Lock();
 		clientSocket  = m_Socket;
 		bDone = clientSocket == INVALID_SOCKET ? true : false;
@@ -917,6 +1002,7 @@ TelnetClient::TelnetClient(void)
 {
 	m_Socket  = INVALID_SOCKET;
 	m_Thread  = 0;
+	m_ControlCmdSent = false;
 
 	WSADATA data;
 	WSAStartup(MAKEWORD(2, 2), &data);
@@ -961,7 +1047,8 @@ bool TelnetClient::Connect(const char *pcAddress, unsigned short uiPort)
 		}
 		else
 		{
-			assert(0);
+			//assert(0);
+            return false;
 		}
 		
 		if(!m_Thread)
@@ -973,7 +1060,8 @@ bool TelnetClient::Connect(const char *pcAddress, unsigned short uiPort)
 	}
 	else
 	{
-		assert(0);
+		//assert(0);
+        return false;
 	}
 	
 #endif
@@ -996,6 +1084,12 @@ void TelnetClient::Close(void)
 		WaitForSingleObject(m_Thread, INFINITE);
 		m_Thread = 0;
 	}
+}
+
+bool TelnetClient::SendRawCommand(const char *vcBuffer, unsigned int len)
+{
+	send(m_Socket, vcBuffer, len, 0);
+	return true;
 }
 
 // Sends text across the telnet connection.
@@ -1176,7 +1270,7 @@ void TelnetServer_Client::ThreadFunc(void)
 		
 		while((pcLine = parser.GetLine()))
 		{
-			m_pParent->PushLine(pcLine, m_uiClient);
+			m_pParent->PushLine(pcLine, strlen(pcLine), m_uiClient);
 		}
 		
 		mutex.Lock();
@@ -1913,104 +2007,148 @@ const char ** InPlaceParser::GetArglist(char *line,int &count) // convert source
 class MyTelnet : public Telnet
 {
 public:
-  MyTelnet(const char *address,unsigned int port)
+  MyTelnet(const char *address,unsigned int port, bool isServer)
   {
     mParser.DefaultSymbols();
     mClient = 0;
     mInterface = 0;
-    mServer = new TelnetServer;
-    mIsServer = mServer->Listen(port);
-    mHaveConnection = true;
-    if ( mIsServer )
+
+    if(isServer)
     {
-      mInterface = static_cast< TelnetInterface *>(mServer);
+        mServer = new TelnetServer;
+        mIsServer = mServer->Listen(port);
+        if ( mIsServer )
+        {
+            mHaveConnection = true;
+            mInterface = static_cast< TelnetInterface *>(mServer);
+            mIsCreateSuccess = true;
+        }
+        else
+        {
+            delete mServer;
+            mServer = 0;
+            mIsCreateSuccess = false;
+            return;
+        }
     }
     else
     {
-      delete mServer;
-      mServer = 0;
-      mClient = new TelnetClient;
-      mHaveConnection = mClient->Connect(address,port);
-      if ( !mHaveConnection )
-      {
-        delete mClient;
-        mClient = 0;
-      }
-      else
-      {
-        mInterface = static_cast< TelnetInterface *>(mClient);
-      }
+        mClient = new TelnetClient;
+        mHaveConnection = mClient->Connect(address,port);
+        if ( !mHaveConnection )
+        {
+            delete mClient;
+            mClient = 0;
+            mIsCreateSuccess = false;
+        }
+        else
+        {
+            mInterface = static_cast< TelnetInterface *>(mClient);
+            mIsCreateSuccess = true;
+        }
     }
   }
 
-  virtual bool          isServer(void) // returns true if we are a server or a client.  First one created on a machine is a server, additional copies are clients.
+  virtual bool isServer(void) // returns true if we are a server or a client.  First one created on a machine is a server, additional copies are clients.
   {
-    return mIsServer;
+      return mIsServer;
   }
 
   virtual bool haveConnection(void)
   {
-    return mHaveConnection;
+      return mHaveConnection;
   }
 
-  virtual bool         sendMessage(unsigned int client,const char *fmt,...)
+  bool isCreateSuccess(void)
+  {
+      return mIsCreateSuccess;
+  }
+
+  virtual bool sendMessage(unsigned int client,const char *fmt,...)
   {
     bool ret = false;
     if ( mInterface )
     {
     	char wbuff[MAXPARSEBUFFER];
-      wbuff[MAXPARSEBUFFER-1] = 0;
+        wbuff[MAXPARSEBUFFER-1] = 0;
     	_vsnprintf(wbuff,MAXPARSEBUFFER-1, fmt, (char *)(&fmt+1));
-      ret = mInterface->SendText(client,"%s",wbuff);
+        ret = mInterface->SendText(client,"%s",wbuff);
     }
     return ret;
   }
 
   virtual const char *  receiveMessage(unsigned int &client)
   {
-    const char *ret = 0;
-    client = 0;
+      const char *ret = 0;
+      client = 0;
 
-    if ( mInterface )
-    {
-      ret = mInterface->GetLine(client);
-    }
+      if ( mInterface )
+      {
+          ret = mInterface->GetLine(client);
+      }
 
-    return ret;
+      return ret;
   }
 
   virtual const char ** getArgs(const char *input,int &argc) // parse string into a series of arguments.
   {
-    strncpy(mParseBuffer,input,MAXPARSEBUFFER);
-    mParseBuffer[MAXPARSEBUFFER-1] = 0;
-    return mParser.GetArglist(mParseBuffer,argc);
+      strncpy(mParseBuffer,input,MAXPARSEBUFFER);
+      mParseBuffer[MAXPARSEBUFFER-1] = 0;
+      return mParser.GetArglist(mParseBuffer,argc);
   }
 
   virtual ~MyTelnet(void)
   {
-    delete mClient;
-    delete mServer;
+      if(mIsServer)
+      {
+          delete mClient;
+      }
+      else
+      {
+          delete mServer;
+      }
   }
 private:
-  bool          mIsServer;
-  bool          mHaveConnection;
-  TelnetInterface *mInterface;
-  TelnetClient *mClient;
-  TelnetServer *mServer;
-  char          mParseBuffer[MAXPARSEBUFFER];
-  InPlaceParser mParser;
+    bool          mIsServer;
+    bool          mHaveConnection;
+    TelnetInterface *mInterface;
+    TelnetClient *mClient;
+    TelnetServer *mServer;
+    bool          mIsCreateSuccess;
+    char          mParseBuffer[MAXPARSEBUFFER];
+    InPlaceParser mParser;
 };
 
-Telnet * createTelnet(const char *address,unsigned int port)
+Telnet* createTelnetClient(const char *address,unsigned int port)
 {
-  MyTelnet *m = new MyTelnet(address,port);
-  return static_cast< Telnet *>(m);
+    MyTelnet *m = new MyTelnet(address,port, false);
+    if(m->isCreateSuccess())
+    {
+        return static_cast< Telnet *>(m);
+    }
+    else
+    {
+        return NULL;
+    }
 }
 
-void     releaseTelnet(Telnet *t)
+Telnet* createTelnetServer(const char *address,unsigned int port)
 {
-  MyTelnet *m = static_cast< MyTelnet *>(t);
-  delete m;
+    MyTelnet *m = new MyTelnet(address,port, true);
+    if(m->isCreateSuccess())
+    {
+        return static_cast< Telnet *>(m);
+    }
+    else
+    {
+        return NULL;
+    }
+}
+
+void  releaseTelnet(Telnet *t)
+{
+    MyTelnet *m = static_cast< MyTelnet *>(t);
+    delete m;
 }
 
 

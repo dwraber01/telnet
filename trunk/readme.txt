@@ -45,6 +45,10 @@ Fundraising site: http://www.amillionpixels.us
 New Temple Site:  http://newtemple.blogspot.com
 
 
+If you have any questions you can also contact with Walle Fu( China, HangZhou)
+email: johnnyelf83@gmail.com, johnnyelf@163.com
+
+
 The MIT license:
 
 Permission is hereby granted, freeof charge, to any person obtaining a copy

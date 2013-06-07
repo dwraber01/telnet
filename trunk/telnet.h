@@ -87,7 +87,9 @@ protected:
   virtual ~Telnet(void) { };
 };
 
-Telnet * createTelnet(const char *address="LOCALHOST",unsigned int port=23);
+Telnet * createTelnetServer(const char *address="localhost",unsigned int port=23);
+Telnet * createTelnetClient(const char *address,unsigned int port);
+
 void     releaseTelnet(Telnet *t);
 
 };
