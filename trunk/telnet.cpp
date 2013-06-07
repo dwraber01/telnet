@@ -2033,6 +2033,7 @@ public:
     }
     else
     {
+        mIsServer = false;
         mClient = new TelnetClient;
         mHaveConnection = mClient->Connect(address,port);
         if ( !mHaveConnection )
