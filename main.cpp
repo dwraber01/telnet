@@ -81,7 +81,7 @@ int main(int argc, const char **argv)
         printf("Host is: %s", host);
         const char* charPort = argv[2];
         int port = atoi(charPort);
-        printf("port is: %s", port);
+        printf("port is: %s", charPort);
         const char* type = argv[3];
         printf("Type is: %s", type);
         

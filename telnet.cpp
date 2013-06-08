@@ -2129,6 +2129,7 @@ Telnet* createTelnetClient(const char *address,unsigned int port)
     }
     else
     {
+        delete m;
         return NULL;
     }
 }
@@ -2142,6 +2143,7 @@ Telnet* createTelnetServer(const char *address,unsigned int port)
     }
     else
     {
+        delete m;
         return NULL;
     }
 }
