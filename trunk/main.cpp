@@ -78,12 +78,12 @@ int main(int argc, const char **argv)
     {
         // host, port, type(server or client)
         const char* host = argv[1];
-        printf("Host is: %s", host);
+        printf("Host is: %s\r\n", host);
         const char* charPort = argv[2];
         int port = atoi(charPort);
-        printf("port is: %s", charPort);
+        printf("port is: %s\r\n", charPort);
         const char* type = argv[3];
-        printf("Type is: %s", type);
+        printf("Type is: %s\r\n", type);
         
         if(stricmp(type, "server") == 0)
         {
