@@ -645,7 +645,7 @@ class TelnetParser
 			unsigned int uiNewSize = uiLen + m_uiBufferUsed;
 			if(uiNewSize >= m_uiBufferSize) Resize(uiNewSize);
 			
-			int index = 0;
+			unsigned int index = 0;
 			if (pcBuffer[index] == -1)
 			{
                 //Extended ASCII Codes: 255,
@@ -659,7 +659,18 @@ class TelnetParser
 			{
                 //Hard code, for command message transfered with the FreeSSHd telnet server.
                 //TODO: need to optimize the design of dealing about control message before login.
-				const char buff[15] = {0xff, 0xfb, 0x18, 0xff, 0xfd, 0x03, 0xff, 0xfb, 0x03, 0xff, 0xfd, 0x01, 0xff, 0xfb, 0x1f};
+				
+                /*
+                    0xff: IAC
+                    0xfb: WILL
+
+                    message(0xff, 0xfb, 0x18) : <IAC, WILL, 24>
+                    message(0xff, 0xfd, 0x03) : <IAC, WILL, 3>
+                    message(0xff, 0xfd, 0x03) : <IAC, WILL, 3>
+                    message(0xff, 0xfd, 0x01) : <IAC, WILL, 1>
+                    message(0xff, 0xfd, 0x1f) : <IAC, WILL, 31>
+                */
+                const char buff[15] = {0xff, 0xfb, 0x18, 0xff, 0xfd, 0x03, 0xff, 0xfb, 0x03, 0xff, 0xfd, 0x01, 0xff, 0xfb, 0x1f};
 				gTelnet->sendMessage(0, buff, 15);
 				return;
 			}
