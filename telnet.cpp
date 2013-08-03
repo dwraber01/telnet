@@ -2113,11 +2113,11 @@ public:
   {
       if(mIsServer)
       {
-          delete mClient;
+          delete mServer;
       }
       else
       {
-          delete mServer;
+          delete mClient;
       }
   }
 private:
